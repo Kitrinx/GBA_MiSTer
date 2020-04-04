@@ -163,7 +163,7 @@ wire reset = RESET | buttons[1] | status[0] | cart_download | bk_loading | hold_
 // 0         1         2         3         4         5         6
 // 0123456789012345678901234567890123456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV0123456789ABCDEFGHIJKLMNOPQRSTUV
-// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX X
+// XXXXXXXXX  XXXXXXXXXXXXXXXXXXXXX
 
 `include "build_id.v"
 parameter CONF_STR = {
@@ -192,10 +192,7 @@ parameter CONF_STR = {
 	"H2OG,Turbo,Off,On;",
 	"OB,Sync core to video,Off,On;",
 	"OR,Rewind Capture,Off,On;",
-	"OA,RTC+Gyro+Solar,Off,On;",
 	"H6OTV,Solar Sensor,0%,15%,30%,42%,55%,70%,85%,100%;",
-	"H6r1,Initialize RTC;",
-	"O9,Tilt on Analogstick,Off,On;",
 	"OS,Homebrew BIOS(Reset!),Off,On;",
 	"R0,Reset;",
 	"J1,A,B,L,R,Select,Start,FastForward,Rewind;",
@@ -214,7 +211,7 @@ parameter CONF_STR = {
 
 wire  [1:0] buttons;
 wire [63:0] status;
-wire [15:0] status_menumask = {~status[10], status[27], cart_loaded, |cart_type, force_turbo, ~gg_active, ~bk_ena};
+wire [15:0] status_menumask = {~solar_quirk, status[27], cart_loaded, |cart_type, force_turbo, ~gg_active, ~bk_ena};
 wire        forced_scandoubler;
 reg  [31:0] sd_lba;
 reg         sd_rd = 0;
@@ -257,7 +254,7 @@ hps_io #(.STRLEN($size(CONF_STR)>>3), .WIDE(1)) hps_io
 	.ps2_key(ps2_key),
 
 	.status(status),
-	.status_in({status[31:17],1'b0,status[15:11],1'b0,1'b0,status[8:0]}),
+	.status_in({status[31:17],1'b0,status[15:10],1'b0,status[8:0]}),
 	.status_set(cart_download),
 	.status_menumask(status_menumask),
 	.info_req(ss_info_req),
@@ -451,17 +448,18 @@ gba
    .interframe_blend(status[19]),
    .maxpixels(status[20]),
    .shade_mode(shadercolors),
-	.specialmodule(status[10]),
+	.specialmodule(gpio_quirk),
 	.solar_in(status[31:29]),
-	.tilt(status[9]),
+	.tilt(tilt_quirk),
    .rewind_on(status[27]),
    .rewind_active(status[27] & joy[11]),
    .savestate_number(ss_base),
 
-   .RTC_timestampIn(RTC_time),
+   .RTC_timestampNew(RTC_time[32]),
+   .RTC_timestampIn(RTC_time[31:0]),
    .RTC_timestampSaved(time_dout[42 +: 32]),
    .RTC_savedtimeIn(time_dout[0 +: 42]),
-   .RTC_saveLoaded(RTC_load | status[33]),
+   .RTC_saveLoaded(RTC_load),
    .RTC_timestampOut(time_din[42 +: 32]),
    .RTC_savedtimeOut(time_din[0 +: 42]),
    .RTC_inuse(has_rtc),
@@ -526,6 +524,9 @@ gba
 
 reg sram_quirk = 0;
 reg memory_remap_quirk = 0;
+reg gpio_quirk = 0;
+reg tilt_quirk = 0;
+reg solar_quirk = 0;
 always @(posedge clk_sys) begin
 	reg [95:0] cart_id;
 	reg old_download;
@@ -534,6 +535,9 @@ always @(posedge clk_sys) begin
 	if(~old_download && cart_download) begin
       sram_quirk         <= 0;
       memory_remap_quirk <= 0;
+      gpio_quirk         <= 0;
+      tilt_quirk         <= 0;
+      solar_quirk        <= 0;
    end
 
 	// TODO: better to use game ID (fixed 6 bytes after name of game) - less data to check.
@@ -582,9 +586,18 @@ always @(posedge clk_sys) begin
 				if(cart_id == {"WRECKINGCREW"} )              	begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 14 - Wrecking Crew
 				if(cart_id == {"BALLOONFIGHT"} )              	begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 13 - Balloon Fight
 				if(cart_id == {"CLU CLU LAND"} )              	begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 12 - Clu Clu Land
-				if(cart_id == {"MARIO BROS.", 8'h00} )      	begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 11 - Mario Bros.
+				if(cart_id == {"MARIO BROS.", 8'h00} )      	   begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 11 - Mario Bros.
 				if(cart_id == {"STAR SOLDIER"} )              	begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 10 - Star Soldier
 				if(cart_id == {"MAPPY", 56'h00000000000000} ) 	begin sram_quirk <= 1; memory_remap_quirk <= 1; end // Famicom Mini 08 - Mappy
+				if(cart_id == {"POKEMON EMER"} ) 	            begin gpio_quirk <= 1;                          end // POKEMON Emerald  - All regions
+				if(cart_id == {"POKEMON RUBY"} ) 	            begin gpio_quirk <= 1;                          end // POKEMON Ruby     - All regions
+				if(cart_id == {"POKEMON SAPP"} ) 	            begin gpio_quirk <= 1;                          end // POKEMON Sapphire - All regions
+				if(cart_id == {"BOKTAI", 48'h000000000000} ) 	begin gpio_quirk <= 1; solar_quirk <= 1;        end // Boktai 1         - All regions
+				if(cart_id == {"BOKTAI2", 40'h0000000000} ) 	   begin gpio_quirk <= 1; solar_quirk <= 1;        end // Boktai 2         - All regions
+				if(cart_id == {"WARIOTWISTED"} ) 	            begin gpio_quirk <= 1;                          end // WarioWareTwisted - US
+				if(cart_id == {"HAPPYPANECHU"} ) 	            begin tilt_quirk <= 1;                          end // Koro Koro Puzzle
+				if(cart_id == {"YOSHI'S U/G", 8'h00} ) 	      begin tilt_quirk <= 1;                          end // Yoshi Gravi EU    - All regions
+				if(cart_id == {"YOSHI TOPSY", 8'h00} ) 	      begin tilt_quirk <= 1;                          end // Yoshi Topsy US    - All regions
 			end
 		end
 	end
@@ -638,7 +651,7 @@ sdram sdram
 	.ch3_din(bram_dout),
 	.ch3_dout(sdr_bram_din),
 	.ch3_req(bram_req & sdram_en),
-	.ch3_rnw(~bk_loading),
+	.ch3_rnw(~bk_loading || extra_data_addr),
 	.ch3_ready(sdr_bram_ack)
 );
 
@@ -698,7 +711,7 @@ wire [127:0] time_din_h = {32'd0, time_din, "RT"};
 wire [15:0] bram_dout;
 wire [15:0] bram_din = sdram_en ? sdr_bram_din : ddr_bram_din;
 wire        bram_ack = sdram_en ? sdr_bram_ack : ddr_bram_ack;
-assign sd_buff_din = (sd_lba[8:0] > save_sz) ? (time_din_h[{sd_buff_addr[2:0], 4'b0000} +: 16]) : bram_buff_out;
+assign sd_buff_din = extra_data_addr ? (time_din_h[{sd_buff_addr[2:0], 4'b0000} +: 16]) : bram_buff_out;
 wire [15:0] bram_buff_out;
 
 dpram #(8,16) bram
@@ -711,7 +724,7 @@ dpram #(8,16) bram
 	.q_a(bram_dout),
 
 	.address_b(sd_buff_addr),
-	.wren_b(sd_buff_wr && ~bk_record_rtc),
+	.wren_b(sd_buff_wr && ~extra_data_addr),
 	.data_b(sd_buff_dout),
 	.q_b(bram_buff_out)
 );
@@ -946,16 +959,18 @@ reg bk_record_rtc = 0;
 
 wire [16:0] sd_addr_comb = {sd_lba[8:0], sd_buff_addr[7:0]};
 
+wire extra_sv_data = use_img && (save_sz < (img_size[17:9] - 1'd1));
+wire extra_data_addr = sd_lba[8:0] > save_sz;
 
 always @(posedge clk_sys) begin
 	if (bk_write)      bk_pending <= 1;
 	else if (bk_state) bk_pending <= 0;
 end
-
+reg use_img;
 reg [8:0] save_sz;
-always @(posedge clk_sys) begin
+
+always @(posedge clk_sys) begin : size_block
 	reg old_downloading;
-	reg use_img;
 
 	old_downloading <= cart_download;
 	if(~old_downloading & cart_download) {use_img, save_sz} <= 0;
@@ -968,7 +983,10 @@ always @(posedge clk_sys) begin
 
 	if(img_mounted && img_size && !img_readonly) begin
 		use_img <= 1;
-		save_sz <= img_size[17:9] - 1'd1;
+		if (!(img_size[17:9] & (img_size[17:9] - 9'd1))) // Power of two
+			save_sz <= img_size[17:9] - 1'd1;
+		else                                             // Assume one extra sector of RTC data
+			save_sz <= img_size[17:9] - 2'd2;
 	end
 
 	bk_ena <= |save_sz;
@@ -1023,15 +1041,15 @@ always @(posedge clk_sys) begin
 				end
 		endcase
 
-		//if (sd_lba[7:0] && !(sd_lba[7:0] & (sd_lba[7:0] - 8'd1))) begin // power of two
+		if (extra_data_addr) begin
 			if (~|sd_buff_addr && sd_buff_wr && sd_buff_dout == "RT") begin
 				bk_record_rtc <= 1;
 				RTC_load <= 0;
 			end
-		//end
+		end
 
 		if (bk_record_rtc) begin
-			if (sd_buff_addr < 6 && sd_buff_addr > 1)
+			if (sd_buff_addr < 6 && sd_buff_addr >= 1)
 				time_dout[{sd_buff_addr[2:0] - 3'd1, 4'b0000} +: 16] <= sd_buff_dout;
 
 			if (sd_buff_addr > 5)
@@ -1058,7 +1076,7 @@ always @(posedge clk_sys) begin
 
 					RTC_wr <= (sd_lba[7:0] == save_sz);
 
-					if (sd_lba[8:0] == {1'b0, save_sz} + 9'd1)
+					if (sd_lba[8:0] == {1'b0, save_sz} + (has_rtc ? 9'd1 : 9'd0))
 						bk_state <= 0;
 				end
 		endcase
